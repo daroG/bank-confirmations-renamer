@@ -92,6 +92,19 @@ invoices-renamer-cli.exe "C:\Path\To\Your\Directory"
    - VAT-7: `VAT7-MMYY.pdf` (np. "VAT7-0925.pdf")
    - ZUS: `ZUS-MMYYYY.pdf` (np. "ZUS-092024.pdf")
 
+## Rozwiązywanie problemów
+
+### PDF z błędem "missing unicode map and encoding"
+
+Niektóre pliki PDF mogą mieć problemy z kodowaniem tekstu, które uniemożliwiają automatyczną ekstrakcję. W takim przypadku:
+
+1. **Sprawdź logi** - aplikacja zapisze szczegółowy komunikat o błędzie w pliku `app.log`
+2. **Rozwiązania**:
+   - Otwórz plik PDF i zapisz go ponownie w nowszej wersji PDF (np. PDF 1.7)
+   - Użyj narzędzia do konwersji PDF (np. Adobe Acrobat, pdftk)
+   - Wydrukuj plik do PDF za pomocą drukarki wirtualnej
+3. **Plik zostanie pominięty** - aplikacja nie przerwie działania, ale zarejestruje błąd w logach
+
 ## Rozwój
 
 ### Struktura projektu

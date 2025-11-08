@@ -154,6 +154,18 @@ cargo clippy
 7. If match found, renames file to standardized format
 8. Continues monitoring until Ctrl+C
 
+## Error Handling
+
+The application handles PDF processing errors gracefully:
+- **Panic recovery**: Catches panics from pdf-extract library (common with malformed PDFs)
+- **Unicode/encoding errors**: PDFs with missing unicode maps are logged and skipped
+- **File operations**: All file rename operations are logged with success/failure status
+- **Non-blocking**: Errors in one file don't stop processing of other files
+
+Common PDF issues:
+- **Missing unicode map/encoding**: Some older or malformed PDFs lack proper text encoding
+- **Solution**: Re-save PDF in newer format, use PDF converter, or print-to-PDF
+
 ## Logging
 
 The GUI application logs all activity to a file for debugging and monitoring:
