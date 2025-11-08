@@ -56,6 +56,21 @@ Katalogi są zapisywane w pliku konfiguracyjnym:
 
 Możesz ręcznie edytować ten plik, a następnie użyć opcji "Przeładuj" w menu.
 
+#### Logi
+
+Aplikacja zapisuje wszystkie operacje do pliku logu:
+- Lokalizacja: `%APPDATA%\invoices-renamer\app.log`
+- Zawiera informacje o:
+  - Uruchamianiu i zamykaniu aplikacji
+  - Dodawaniu/usuwaniu katalogów
+  - Wykrywaniu i przetwarzaniu plików
+  - Błędach i ostrzeżeniach
+
+Aby przeglądać logi w czasie rzeczywistym (PowerShell):
+```powershell
+Get-Content $env:APPDATA\invoices-renamer\app.log -Wait -Tail 50
+```
+
 ### Wersja CLI (Linia poleceń)
 
 ```bash

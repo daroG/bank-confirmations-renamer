@@ -92,7 +92,12 @@ cargo clippy
    - Provides methods to add/remove directories
    - Auto-creates config directory if needed
 
-4. **pdf_processor.rs** - PDF text extraction and renaming logic
+4. **icon_generator.rs** - Tray icon generation
+   - Generates a 32x32 PNG icon programmatically
+   - Creates a simple document/PDF icon representation
+   - Used for the system tray icon
+
+5. **pdf_processor.rs** - PDF text extraction and renaming logic
    - Extracts text from PDF files using `pdf-extract` crate
    - Uses regex patterns to identify document types:
      - **Tax forms**: Pattern `OKR/ YYMmm/SFP/(PIT-5|VAT-7)` extracts year, month, and form type
@@ -101,7 +106,7 @@ cargo clippy
        - Renames to: `ZUS-{MM}{YYYY}.pdf` using previous month from payment date
    - Returns `Result<(), Box<dyn std::error::Error>>` for error handling
 
-5. **directory_checker.rs** - Batch directory processing utility
+6. **directory_checker.rs** - Batch directory processing utility
    - Processes all PDF files in a directory at once
    - Useful for batch operations on existing files
    - Not actively used in current application flow
@@ -117,6 +122,9 @@ cargo clippy
 - **serde/serde_json**: Configuration serialization
 - **dirs**: Platform-specific directory paths
 - **native-dialog**: File picker and message dialogs
+- **log/env_logger**: Logging framework with file output
+- **chrono**: Timestamps for log entries
+- **image**: Icon generation and loading
 
 ### Program Flow
 
@@ -146,14 +154,34 @@ cargo clippy
 7. If match found, renames file to standardized format
 8. Continues monitoring until Ctrl+C
 
+## Logging
+
+The GUI application logs all activity to a file for debugging and monitoring:
+- **Log file location**: `%APPDATA%\invoices-renamer\app.log` (Windows)
+- **Log level**: INFO (can be changed via `RUST_LOG` environment variable)
+- **Logged events**:
+  - Application startup/shutdown
+  - Configuration loading/saving
+  - Directory scanning and watching
+  - File detection and processing
+  - PDF parsing and renaming operations
+  - Errors and warnings
+
+To view logs in real-time (for debugging):
+```bash
+# Windows PowerShell
+Get-Content $env:APPDATA\invoices-renamer\app.log -Wait -Tail 50
+```
+
 ## Important Notes
 
 - The code contains Polish language comments and console output
 - Files must start with "transfer_" prefix to be processed
 - Each directory is monitored non-recursively (subdirectories are not watched)
 - Configuration file location: `%APPDATA%\invoices-renamer\config.json` on Windows
+- Log file location: `%APPDATA%\invoices-renamer\app.log` on Windows
 - The GUI version runs without a console window in release mode (uses `windows_subsystem = "windows"`)
 - The application uses separate threads for each directory watcher
 - Two binary targets are built:
-  - `invoices-renamer` - GUI tray application
+  - `invoices-renamer` - GUI tray application (with custom icon)
   - `invoices-renamer-cli` - CLI version
