@@ -1,0 +1,11 @@
+[package]
+name = "invoices-renamer"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+regex = "1.12.2"
+pdf-extract = "0.10.0" 
+notify = "8.2.0"
+ctrlc = "3.4"
+
