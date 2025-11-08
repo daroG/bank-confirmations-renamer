@@ -67,37 +67,81 @@ cargo clippy
 
 ## Architecture
 
+### Code Organization
+
+The codebase is organized into focused modules with clear responsibilities:
+
+**Entry Points:**
+- `main.rs` - GUI tray application (minimal, delegates to modules)
+- `main_cli.rs` - CLI application
+
+**Core Logic:**
+- `tray_app.rs` - Tray icon and menu handling
+- `file_watcher.rs` - Directory monitoring and file detection
+- `pdf_processor.rs` - PDF parsing and renaming
+
+**Supporting Modules:**
+- `config.rs` - Configuration persistence
+- `logger.rs` - Logging setup
+- `icon_generator.rs` - Tray icon generation
+- `directory_checker.rs` - Batch processing utility (legacy)
+
+This separation ensures:
+- Each module has a single, clear purpose
+- main.rs is minimal (~25 lines)
+- Easy to test individual components
+- Clear dependency flow
+
 ### Core Components
 
-1. **main.rs** - Windows tray GUI application
+1. **main.rs** - Application entry point
+   - Initializes logging system
+   - Creates winit event loop
+   - Launches tray application
+   - Clean and minimal (~25 lines)
+
+2. **tray_app.rs** - Windows tray GUI application logic
+   - TrayApp struct implementing ApplicationHandler
    - Creates system tray icon with menu
    - Manages multiple directory watchers
-   - Provides menu options:
+   - Handles menu events:
      - Add directory to watch
      - Manage directories (view current list)
      - Reload configuration
      - Quit application
-   - Stores configuration in user config directory
-   - Runs without console window in release mode
+   - Integrates with config and file_watcher modules
 
-2. **main_cli.rs** - CLI version entry point
+3. **file_watcher.rs** - Directory monitoring logic
+   - WatcherHandle struct wrapping RecommendedWatcher
+   - process_existing_files() - scans directory for existing PDFs
+   - start_watching() - creates watchers for multiple directories
+   - check_path() - filters and processes PDF files
+   - Spawns separate thread for each watched directory
+
+4. **logger.rs** - Logging initialization
+   - init_logger() - sets up file-based logging
+   - Configures env_logger with custom format
+   - Creates log file in user config directory
+   - Returns log file path for informational purposes
+
+5. **main_cli.rs** - CLI version entry point
    - Sets up single directory monitoring using `notify` crate
    - Filters for PDF files starting with "transfer_"
    - Handles Ctrl+C gracefully with atomic boolean flag
    - Delegates PDF processing to pdf_processor module
 
-3. **config.rs** - Configuration management
+6. **config.rs** - Configuration management
    - Serializes/deserializes watched directories list
    - Stores config in `%APPDATA%/invoices-renamer/config.json` (Windows)
    - Provides methods to add/remove directories
    - Auto-creates config directory if needed
 
-4. **icon_generator.rs** - Tray icon generation
+7. **icon_generator.rs** - Tray icon generation
    - Generates a 32x32 PNG icon programmatically
    - Creates a simple document/PDF icon representation
    - Used for the system tray icon
 
-5. **pdf_processor.rs** - PDF text extraction and renaming logic
+8. **pdf_processor.rs** - PDF text extraction and renaming logic
    - Extracts text from PDF files using `pdf-extract` crate
    - Uses regex patterns to identify document types:
      - **Tax forms**: Pattern `OKR/ YYMmm/SFP/(PIT-5|VAT-7)` extracts year, month, and form type
@@ -106,7 +150,7 @@ cargo clippy
        - Renames to: `ZUS-{MM}{YYYY}.pdf` using previous month from payment date
    - Returns `Result<(), Box<dyn std::error::Error>>` for error handling
 
-6. **directory_checker.rs** - Batch directory processing utility
+9. **directory_checker.rs** - Batch directory processing utility
    - Processes all PDF files in a directory at once
    - Useful for batch operations on existing files
    - Not actively used in current application flow
