@@ -1,11 +1,32 @@
 [package]
 name = "invoices-renamer"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
+
+[[bin]]
+name = "invoices-renamer"
+path = "src/main.rs"
+
+[[bin]]
+name = "invoices-renamer-cli"
+path = "src/main_cli.rs"
 
 [dependencies]
 regex = "1.12.2"
-pdf-extract = "0.10.0" 
+pdf-extract = "0.10.0"
 notify = "8.2.0"
 ctrlc = "3.4"
+tray-icon = "0.19"
+winit = "0.30"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+dirs = "5.0"
+native-dialog = "0.7"
+
+[target.'cfg(windows)'.dependencies]
+winapi = { version = "0.3", features = ["winuser"] }
+
+[profile.release]
+opt-level = 3
+lto = true
 
