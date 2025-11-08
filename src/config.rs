@@ -48,6 +48,7 @@ impl Config {
         }
     }
 
+    #[allow(dead_code)]
     pub fn remove_directory(&mut self, dir: &str) {
         self.watched_directories.retain(|d| d != dir);
     }

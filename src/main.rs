@@ -8,8 +8,10 @@ use notify::{Watcher, RecursiveMode, RecommendedWatcher, Config as NotifyConfig}
 use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use tray_icon::{TrayIconBuilder, menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem}};
-use winit::event_loop::{EventLoop, ControlFlow};
+use tray_icon::{TrayIcon, TrayIconBuilder, menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem, MenuId}};
+use winit::application::ApplicationHandler;
+use winit::event::WindowEvent;
+use winit::event_loop::{ActiveEventLoop, EventLoop, ControlFlow};
 use config::Config;
 
 fn check_path(path: &PathBuf) {
@@ -91,65 +93,95 @@ fn start_watching(directories: Vec<String>) -> Vec<WatcherHandle> {
     handles
 }
 
-fn main() {
-    // Load configuration
-    let config = Arc::new(Mutex::new(
-        Config::load().unwrap_or_else(|_| Config::default())
-    ));
+struct TrayApp {
+    config: Arc<Mutex<Config>>,
+    watchers: Arc<Mutex<Vec<WatcherHandle>>>,
+    add_dir_id: MenuId,
+    manage_dirs_id: MenuId,
+    reload_id: MenuId,
+    quit_id: MenuId,
+    _tray_icon: Option<TrayIcon>,
+}
 
-    // Create event loop
-    let event_loop = EventLoop::new().expect("Nie można utworzyć event loop");
+impl TrayApp {
+    fn new() -> Self {
+        // Load configuration
+        let config = Arc::new(Mutex::new(
+            Config::load().unwrap_or_else(|_| Config::default())
+        ));
 
-    // Create tray menu
-    let tray_menu = Menu::new();
+        // Create tray menu
+        let tray_menu = Menu::new();
 
-    let add_dir_item = MenuItem::new("Dodaj katalog do obserwacji", true, None);
-    let manage_dirs_item = MenuItem::new("Zarządzaj katalogami", true, None);
-    let reload_item = MenuItem::new("Przeładuj", true, None);
-    let separator = PredefinedMenuItem::separator();
-    let quit_item = MenuItem::new("Zakończ", true, None);
+        let add_dir_item = MenuItem::new("Dodaj katalog do obserwacji", true, None);
+        let manage_dirs_item = MenuItem::new("Zarządzaj katalogami", true, None);
+        let reload_item = MenuItem::new("Przeładuj", true, None);
+        let separator = PredefinedMenuItem::separator();
+        let quit_item = MenuItem::new("Zakończ", true, None);
 
-    tray_menu.append(&add_dir_item).ok();
-    tray_menu.append(&manage_dirs_item).ok();
-    tray_menu.append(&reload_item).ok();
-    tray_menu.append(&separator).ok();
-    tray_menu.append(&quit_item).ok();
+        let add_dir_id = add_dir_item.id().clone();
+        let manage_dirs_id = manage_dirs_item.id().clone();
+        let reload_id = reload_item.id().clone();
+        let quit_id = quit_item.id().clone();
 
-    // Create tray icon
-    let _tray_icon = TrayIconBuilder::new()
-        .with_menu(Box::new(tray_menu))
-        .with_tooltip("Invoice Renamer")
-        .build()
-        .expect("Nie można utworzyć ikony w zasobniku");
+        tray_menu.append(&add_dir_item).ok();
+        tray_menu.append(&manage_dirs_item).ok();
+        tray_menu.append(&reload_item).ok();
+        tray_menu.append(&separator).ok();
+        tray_menu.append(&quit_item).ok();
 
-    // Start watching configured directories
-    let watchers = Arc::new(Mutex::new(Vec::new()));
-    {
-        let config_lock = config.lock().unwrap();
-        let dirs = config_lock.watched_directories.clone();
-        drop(config_lock);
+        // Create tray icon
+        let tray_icon = TrayIconBuilder::new()
+            .with_menu(Box::new(tray_menu))
+            .with_tooltip("Invoice Renamer")
+            .build()
+            .ok();
 
-        if !dirs.is_empty() {
-            let mut watchers_lock = watchers.lock().unwrap();
-            *watchers_lock = start_watching(dirs);
+        // Start watching configured directories
+        let watchers = Arc::new(Mutex::new(Vec::new()));
+        {
+            let config_lock = config.lock().unwrap();
+            let dirs = config_lock.watched_directories.clone();
+            drop(config_lock);
+
+            if !dirs.is_empty() {
+                let mut watchers_lock = watchers.lock().unwrap();
+                *watchers_lock = start_watching(dirs);
+            }
+        }
+
+        Self {
+            config,
+            watchers,
+            add_dir_id,
+            manage_dirs_id,
+            reload_id,
+            quit_id,
+            _tray_icon: tray_icon,
         }
     }
+}
 
-    let menu_channel = MenuEvent::receiver();
-    let config_clone = config.clone();
-    let watchers_clone = watchers.clone();
+impl ApplicationHandler for TrayApp {
+    fn resumed(&mut self, _event_loop: &ActiveEventLoop) {}
 
-    event_loop.run(move |_event, elwt| {
-        elwt.set_control_flow(ControlFlow::Wait);
+    fn window_event(
+        &mut self,
+        _event_loop: &ActiveEventLoop,
+        _window_id: winit::window::WindowId,
+        _event: WindowEvent,
+    ) {
+    }
 
-        if let Ok(event) = menu_channel.try_recv() {
-            if event.id == add_dir_item.id() {
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if let Ok(event) = MenuEvent::receiver().try_recv() {
+            if event.id == self.add_dir_id {
                 // Add directory dialog
                 if let Ok(Some(path)) = native_dialog::FileDialog::new()
                     .show_open_single_dir()
                 {
                     if let Some(path_str) = path.to_str() {
-                        let mut config_lock = config_clone.lock().unwrap();
+                        let mut config_lock = self.config.lock().unwrap();
                         config_lock.add_directory(path_str.to_string());
                         if let Err(e) = config_lock.save() {
                             eprintln!("Błąd zapisu konfiguracji: {}", e);
@@ -157,15 +189,15 @@ fn main() {
 
                         // Start watching the new directory
                         let dirs = vec![path_str.to_string()];
-                        let mut watchers_lock = watchers_clone.lock().unwrap();
+                        let mut watchers_lock = self.watchers.lock().unwrap();
                         watchers_lock.extend(start_watching(dirs));
 
                         println!("Dodano katalog: {}", path_str);
                     }
                 }
-            } else if event.id == manage_dirs_item.id() {
+            } else if event.id == self.manage_dirs_id {
                 // Show current directories
-                let config_lock = config_clone.lock().unwrap();
+                let config_lock = self.config.lock().unwrap();
                 let dirs = config_lock.watched_directories.clone();
                 drop(config_lock);
 
@@ -180,27 +212,36 @@ fn main() {
                     .set_text(&message)
                     .show_alert()
                     .ok();
-            } else if event.id == reload_item.id() {
+            } else if event.id == self.reload_id {
                 // Reload configuration and restart watchers
                 match Config::load() {
                     Ok(new_config) => {
-                        let mut config_lock = config_clone.lock().unwrap();
+                        let mut config_lock = self.config.lock().unwrap();
                         *config_lock = new_config;
                         let dirs = config_lock.watched_directories.clone();
                         drop(config_lock);
 
                         // Restart watchers
-                        let mut watchers_lock = watchers_clone.lock().unwrap();
+                        let mut watchers_lock = self.watchers.lock().unwrap();
                         *watchers_lock = start_watching(dirs);
 
                         println!("Przeładowano konfigurację");
                     }
                     Err(e) => eprintln!("Błąd ładowania konfiguracji: {}", e),
                 }
-            } else if event.id == quit_item.id() {
+            } else if event.id == self.quit_id {
                 println!("Zamykanie aplikacji...");
-                elwt.exit();
+                event_loop.exit();
             }
         }
-    }).expect("Błąd event loop");
+    }
+}
+
+fn main() {
+    let event_loop = EventLoop::new().expect("Nie można utworzyć event loop");
+    event_loop.set_control_flow(ControlFlow::Wait);
+
+    let mut app = TrayApp::new();
+
+    event_loop.run_app(&mut app).expect("Błąd event loop");
 }
