@@ -47,6 +47,7 @@ Skompilowane pliki znajdziesz w `target/release/`:
    - **Dodaj katalog do obserwacji** - wybierz katalog do monitorowania
    - **Zarządzaj katalogami** - wyświetl listę obserwowanych katalogów
    - **Przeładuj** - odśwież konfigurację i uruchom ponownie obserwatory
+   - **Uruchamiaj przy starcie systemu** - włącz/wyłącz automatyczne uruchamianie z Windows
    - **Zakończ** - zamknij aplikację
 
 #### Konfiguracja
@@ -55,6 +56,19 @@ Katalogi są zapisywane w pliku konfiguracyjnym:
 - Windows: `%APPDATA%\invoices-renamer\config.json`
 
 Możesz ręcznie edytować ten plik, a następnie użyć opcji "Przeładuj" w menu.
+
+#### Auto-start
+
+Aplikację można skonfigurować do automatycznego uruchamiania przy starcie Windows:
+
+1. Kliknij prawym przyciskiem na ikonę w zasobniku
+2. Wybierz "Uruchamiaj przy starcie systemu"
+3. Aplikacja uruchomi się automatycznie przy następnym starcie systemu
+
+**Jak to działa:**
+- Dodaje wpis do rejestru Windows (`HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run`)
+- Działa tylko dla bieżącego użytkownika (nie wymaga uprawnień administratora)
+- Można wyłączyć w dowolnym momencie przez menu aplikacji
 
 #### Logi
 

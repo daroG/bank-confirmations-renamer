@@ -6,6 +6,7 @@ mod icon_generator;
 mod logger;
 mod file_watcher;
 mod tray_app;
+mod autostart;
 
 use winit::event_loop::{EventLoop, ControlFlow};
 use tray_app::TrayApp;

@@ -7,6 +7,7 @@ use winit::event_loop::ActiveEventLoop;
 use crate::config::Config;
 use crate::file_watcher::{WatcherHandle, start_watching};
 use crate::icon_generator;
+use crate::autostart;
 
 pub struct TrayApp {
     config: Arc<Mutex<Config>>,
@@ -14,6 +15,7 @@ pub struct TrayApp {
     add_dir_id: MenuId,
     manage_dirs_id: MenuId,
     reload_id: MenuId,
+    autostart_id: MenuId,
     quit_id: MenuId,
     _tray_icon: Option<TrayIcon>,
 }
@@ -35,17 +37,30 @@ impl TrayApp {
         let add_dir_item = MenuItem::new("Dodaj katalog do obserwacji", true, None);
         let manage_dirs_item = MenuItem::new("Zarządzaj katalogami", true, None);
         let reload_item = MenuItem::new("Przeładuj", true, None);
+
+        // Auto-start menu item with checkmark
+        let autostart_enabled = autostart::is_enabled();
+        let autostart_label = if autostart_enabled {
+            "✓ Uruchamiaj przy starcie systemu"
+        } else {
+            "Uruchamiaj przy starcie systemu"
+        };
+        let autostart_item = MenuItem::new(autostart_label, true, None);
+
         let separator = PredefinedMenuItem::separator();
         let quit_item = MenuItem::new("Zakończ", true, None);
 
         let add_dir_id = add_dir_item.id().clone();
         let manage_dirs_id = manage_dirs_item.id().clone();
         let reload_id = reload_item.id().clone();
+        let autostart_id = autostart_item.id().clone();
         let quit_id = quit_item.id().clone();
 
         tray_menu.append(&add_dir_item).ok();
         tray_menu.append(&manage_dirs_item).ok();
         tray_menu.append(&reload_item).ok();
+        tray_menu.append(&separator).ok();
+        tray_menu.append(&autostart_item).ok();
         tray_menu.append(&separator).ok();
         tray_menu.append(&quit_item).ok();
 
@@ -87,6 +102,7 @@ impl TrayApp {
             add_dir_id,
             manage_dirs_id,
             reload_id,
+            autostart_id,
             quit_id,
             _tray_icon: tray_icon,
         }
@@ -162,6 +178,36 @@ impl ApplicationHandler for TrayApp {
                         info!("Przeładowano konfigurację pomyślnie");
                     }
                     Err(e) => error!("Błąd ładowania konfiguracji: {}", e),
+                }
+            } else if event.id == self.autostart_id {
+                // Toggle auto-start
+                match autostart::toggle() {
+                    Ok(enabled) => {
+                        let status = if enabled { "włączony" } else { "wyłączony" };
+                        info!("Auto-start został {}", status);
+
+                        let message = if enabled {
+                            "Aplikacja będzie uruchamiać się automatycznie przy starcie systemu."
+                        } else {
+                            "Aplikacja nie będzie już uruchamiać się automatycznie przy starcie systemu."
+                        };
+
+                        native_dialog::MessageDialog::new()
+                            .set_title("Auto-start")
+                            .set_text(message)
+                            .set_type(native_dialog::MessageType::Info)
+                            .show_alert()
+                            .ok();
+                    }
+                    Err(e) => {
+                        error!("Błąd podczas zmiany ustawienia auto-startu: {}", e);
+                        native_dialog::MessageDialog::new()
+                            .set_title("Błąd")
+                            .set_text(&format!("Nie można zmienić ustawienia auto-startu:\n{}", e))
+                            .set_type(native_dialog::MessageType::Error)
+                            .show_alert()
+                            .ok();
+                    }
                 }
             } else if event.id == self.quit_id {
                 info!("Zamykanie aplikacji na żądanie użytkownika");

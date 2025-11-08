@@ -29,6 +29,7 @@ chrono = "0.4"
 
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", features = ["winuser"] }
+auto-launch = "0.5"
 
 [profile.release]
 opt-level = 3

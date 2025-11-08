@@ -83,6 +83,7 @@ The codebase is organized into focused modules with clear responsibilities:
 **Supporting Modules:**
 - `config.rs` - Configuration persistence
 - `logger.rs` - Logging setup
+- `autostart.rs` - Windows auto-start management
 - `icon_generator.rs` - Tray icon generation
 - `directory_checker.rs` - Batch processing utility (legacy)
 
@@ -136,12 +137,20 @@ This separation ensures:
    - Provides methods to add/remove directories
    - Auto-creates config directory if needed
 
-7. **icon_generator.rs** - Tray icon generation
+7. **autostart.rs** - Windows auto-start management
+   - setup_autostart() - creates AutoLaunch configuration
+   - is_enabled() - checks if auto-start is enabled
+   - enable()/disable() - manages Windows registry entry
+   - toggle() - toggles auto-start state
+   - Platform-specific: Windows only (stubs for other platforms)
+   - Uses `HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run`
+
+8. **icon_generator.rs** - Tray icon generation
    - Generates a 32x32 PNG icon programmatically
    - Creates a simple document/PDF icon representation
    - Used for the system tray icon
 
-8. **pdf_processor.rs** - PDF text extraction and renaming logic
+9. **pdf_processor.rs** - PDF text extraction and renaming logic
    - Extracts text from PDF files using `pdf-extract` crate
    - Uses regex patterns to identify document types:
      - **Tax forms**: Pattern `OKR/ YYMmm/SFP/(PIT-5|VAT-7)` extracts year, month, and form type
@@ -150,7 +159,7 @@ This separation ensures:
        - Renames to: `ZUS-{MM}{YYYY}.pdf` using previous month from payment date
    - Returns `Result<(), Box<dyn std::error::Error>>` for error handling
 
-9. **directory_checker.rs** - Batch directory processing utility
+10. **directory_checker.rs** - Batch directory processing utility
    - Processes all PDF files in a directory at once
    - Useful for batch operations on existing files
    - Not actively used in current application flow
