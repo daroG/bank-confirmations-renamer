@@ -1,4 +1,5 @@
 mod pdf_processor;
+mod rules;
 
 use std::env;
 use std::path::{Path, PathBuf};

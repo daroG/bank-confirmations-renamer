@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod pdf_processor;
+mod rules;
 mod config;
 mod icon_generator;
 mod logger;
