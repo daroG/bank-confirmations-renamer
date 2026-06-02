@@ -24,6 +24,27 @@ fn check_path(path: &PathBuf) {
 }
 
 fn main() {
+    // Panics from pdf-extract (e.g. "missing unicode map and encoding") are
+    // caught by panic::catch_unwind in pdf_processor, but the default panic
+    // hook still prints an alarming "thread 'main' panicked" message before the
+    // unwind is caught. Replace it with a concise, less alarming message.
+    std::panic::set_hook(Box::new(|panic_info| {
+        let location = panic_info
+            .location()
+            .map(|l| format!("{}:{}", l.file(), l.line()))
+            .unwrap_or_else(|| "unknown".to_string());
+
+        let message = if let Some(s) = panic_info.payload().downcast_ref::<&str>() {
+            (*s).to_string()
+        } else if let Some(s) = panic_info.payload().downcast_ref::<String>() {
+            s.clone()
+        } else {
+            "nieznany powód paniki".to_string()
+        };
+
+        eprintln!("Przechwycono panikę w {}: {}", location, message);
+    }));
+
     // Flaga do zakończenia programu
     let running = Arc::new(AtomicBool::new(true));
     let r = running.clone();

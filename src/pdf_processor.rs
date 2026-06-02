@@ -5,6 +5,42 @@ use std::path::Path;
 use std::panic;
 use log::{warn, info, error};
 
+/// Określa znormalizowaną nazwę pliku na podstawie tekstu z PDF.
+///
+/// Zwraca `Ok(Some(nazwa))`, gdy tekst pasuje do znanego wzoru dokumentu
+/// (formularz podatkowy PIT-5/VAT-7 lub potwierdzenie przelewu ZUS), albo
+/// `Ok(None)`, gdy nie pasuje do żadnego wzoru. Jest to czysta (bez operacji
+/// na plikach), testowalna część logiki zmiany nazwy.
+pub fn determine_new_filename(text: &str) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    // Wzór dla OKR/ 25M09/SFP/PIT-5 lub VAT-7, z osobnymi grupami dla roku i miesiąca
+    // Przykład: OKR/ 25M09/SFP/PIT-5
+    let taxes_re = Regex::new(r"OKR/\s*(\d{2})M(\d{2})/SFP/(PIT-5|VAT-7)")?;
+    if let Some(captures) = taxes_re.captures(text) {
+        let year = &captures[1];      // np. 25
+        let month = &captures[2];     // np. 09
+        let form_type = &captures[3]; // np. PIT-5 lub VAT-7
+
+        let form_type_clean = form_type.replace("-", ""); // PIT5 lub VAT7
+        return Ok(Some(format!("{}-{}{}.pdf", form_type_clean, month, year)));
+    }
+
+    // Wzór dla potwierdzenia przelewu ZUS
+    let zus_re = Regex::new(r"DANE ODBIORCY\s*Zakład Ubezpieczeń Społecznych.*DATA OPERACJI\s*(\d{2})-(\d{2})-(\d{4})")?;
+    if let Some(captures) = zus_re.captures(text) {
+        // grupa 1 = dzień (nieużywany), grupa 2 = miesiąc, grupa 3 = rok
+        let month: i16 = captures[2].parse().unwrap_or(0); // np. 09
+        let year: i16 = captures[3].parse().unwrap_or(0);  // np. 2025
+
+        // Składkę ZUS opłaca się za poprzedni miesiąc
+        let previous_month = if month == 1 { 12 } else { month - 1 };
+        let previous_year = if month == 1 { year - 1 } else { year };
+
+        return Ok(Some(format!("ZUS-{:02}{}.pdf", previous_month, previous_year)));
+    }
+
+    Ok(None)
+}
+
 // Właściwa funkcja do parsowania pliku
 pub fn process_pdf_file(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
 
@@ -32,55 +68,66 @@ pub fn process_pdf_file(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>
         }
     };
 
-    // 2. Definicja wzoru dla OKR/ 25M09/SFP/PIT-5 lub VAT-7, z osobnymi grupami dla roku i miesiąca
-    // Przykład: OKR/ 25M09/SFP/PIT-5
-    let taxes_re = Regex::new(r"OKR/\s*(\d{2})M(\d{2})/SFP/(PIT-5|VAT-7)")?;
-
-    // 3. Wyszukiwanie wzoru
-    if let Some(captures) = taxes_re.captures(&text) {
-        let year = captures.get(1).map_or("", |m| m.as_str()); // np. 25
-        let month = captures.get(2).map_or("", |m| m.as_str()); // np. 09
-        let form_type = captures.get(3).map_or("", |m| m.as_str()); // np. PIT-5 lub VAT-7
-
-        if year.is_empty() || month.is_empty() || form_type.is_empty() {
-            warn!("Nie znaleziono wszystkich wymaganych informacji w pliku: {}", path.display());
-            return Ok(());
+    // 2. Określenie nowej nazwy na podstawie zawartości i zmiana nazwy pliku
+    #[allow(non_snake_case)]
+    match determine_new_filename(&text)? {
+        Some(new_filename) => {
+            let new_path = parent_dir.join(&new_filename);
+            fs::rename(path, &new_path)?;
+            info!("Zmieniono nazwę pliku {} na: {}", path.display(), new_path.display());
         }
-
-        let form_type_clean = form_type.replace("-", ""); // PIT5 lub VAT7
-        let new_filename = format!("{}-{}{}.pdf", form_type_clean, month, year);
-
-        let new_path = parent_dir.join(new_filename);
-
-        let new_path_display = new_path.clone();
-        fs::rename(path, new_path)?;
-        info!("Zmieniono nazwę pliku {} na: {}", path.display(), new_path_display.display());
-        return Ok(());
+        None => {
+            warn!("Nie znaleziono znanego wzoru w pliku: {}", path.display());
+        }
     }
 
-    let zus_re = Regex::new(r"DANE ODBIORCY\s*Zakład Ubezpieczeń Społecznych.*DATA OPERACJI\s*(\d{2})-(\d{2})-(\d{4})")?;
-    if let Some(captures) = zus_re.captures(&text) {
-        let day = captures.get(1).map_or("", |m| m.as_str()); // np. 25
-        let month = captures.get(2).map_or("", |m| m.as_str()); // np. 09
-        let year = captures.get(2).map_or("", |m| m.as_str()); // np. 2025
-
-        if year.is_empty() || month.is_empty() || day.is_empty() {
-            warn!("Nie znaleziono wszystkich wymaganych informacji w pliku: {}", path.display());
-            return Ok(());
-        }
-
-        let month_int: i16 = month.parse::<i16>().unwrap_or(0);
-        let year_int: i16 = year.parse::<i16>().unwrap_or(0);
-
-        let previous_month: i16 = if month_int == 1 { 12 } else { month_int - 1 };
-        let previous_year: i16 = if month_int == 1 { year_int - 1 } else { year_int };
-
-        let new_filename = format!("ZUS-{:02}{}.pdf", previous_month, previous_year);
-        let new_path = parent_dir.join(new_filename);
-
-        let new_path_display = new_path.clone();
-        fs::rename(path, new_path)?;
-        info!("Zmieniono nazwę pliku {} na: {}", path.display(), new_path_display.display());
-    }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn matches_pit5_tax_form() {
+        let text = "blah blah OKR/ 25M09/SFP/PIT-5 blah";
+        assert_eq!(
+            determine_new_filename(text).unwrap(),
+            Some("PIT5-0925.pdf".to_string())
+        );
+    }
+
+    #[test]
+    fn matches_vat7_tax_form() {
+        let text = "OKR/25M09/SFP/VAT-7";
+        assert_eq!(
+            determine_new_filename(text).unwrap(),
+            Some("VAT7-0925.pdf".to_string())
+        );
+    }
+
+    #[test]
+    fn zus_uses_previous_month_and_correct_year() {
+        // Regresja: wcześniej `year` czytał grupę miesiąca zamiast roku,
+        // przez co w nazwie pliku rok był zastępowany numerem miesiąca.
+        let text = "DANE ODBIORCY Zakład Ubezpieczeń Społecznych foo DATA OPERACJI 15-09-2025";
+        assert_eq!(
+            determine_new_filename(text).unwrap(),
+            Some("ZUS-082025.pdf".to_string())
+        );
+    }
+
+    #[test]
+    fn zus_january_rolls_back_to_previous_december() {
+        let text = "DANE ODBIORCY Zakład Ubezpieczeń Społecznych foo DATA OPERACJI 10-01-2025";
+        assert_eq!(
+            determine_new_filename(text).unwrap(),
+            Some("ZUS-122024.pdf".to_string())
+        );
+    }
+
+    #[test]
+    fn returns_none_when_no_pattern_matches() {
+        assert_eq!(determine_new_filename("jakiś losowy tekst").unwrap(), None);
+    }
 }

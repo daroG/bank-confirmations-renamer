@@ -1,2 +1,5 @@
 /target
 .claude/
+
+# Local convenience launcher (machine-specific path)
+start.bat
