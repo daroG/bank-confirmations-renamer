@@ -1,76 +1,26 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 mod pdf_processor;
+mod config;
+mod icon_generator;
+mod logger;
+mod file_watcher;
+mod tray_app;
+mod autostart;
 
-use std::env;
-use std::path::{Path, PathBuf};
-use notify::{Watcher, RecursiveMode, RecommendedWatcher, Config};
-use std::sync::mpsc::channel;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-
-
-fn check_path(path: &PathBuf) {
-    if !path.is_file() { return; }
-    if let Some(ext) = path.extension() {
-        if ext != "pdf" { return; }
-        if let Some(filename) = path.file_name().and_then(|n| n.to_str()) {
-            if filename.starts_with("transfer_") {
-                println!("Wykryto plik: {}", path.display());
-                // Przetwórz plik
-                let _ = pdf_processor::process_pdf_file(&PathBuf::from(&path));
-            }
-        }
-        
-    }
-}
+use winit::event_loop::{EventLoop, ControlFlow};
+use tray_app::TrayApp;
 
 fn main() {
-    // Flaga do zakończenia programu
-    let running = Arc::new(AtomicBool::new(true));
-    let r = running.clone();
-    ctrlc::set_handler(move || {
-        r.store(false, Ordering::SeqCst);
-        println!("\nZamykam program na żądanie użytkownika (Ctrl+C)");
-    }).expect("Nie można ustawić handlera Ctrl+C");
-    // Pobierz argumenty z linii poleceń
-    let args: Vec<String> = env::args().collect();
-    if args.len() < 2 {
-        eprintln!("Użycie: {} <ścieżka_do_katalogu>", args[0]);
-        std::process::exit(1);
-    }
-    let dir_path = &args[1];
-    let dir = Path::new(dir_path);
+    // Initialize logging
+    logger::init_logger();
 
-    // Najpierw przetwórz wszystkie istniejące pliki w katalogu
-    println!("Sprawdzam istniejące pliki w katalogu: {}", dir_path);
-    if let Ok(entries) = std::fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            check_path(&path);
-        }
-    }
-    println!("Zakończono sprawdzanie istniejących plików.");
-    println!("Obserwuję katalog: {}", dir_path);
+    // Create event loop
+    let event_loop = EventLoop::new().expect("Nie można utworzyć event loop");
+    event_loop.set_control_flow(ControlFlow::Wait);
 
-    let (tx, rx) = channel();
-    let mut watcher = RecommendedWatcher::new(
-        move |res| {
-            tx.send(res).unwrap();
-        },
-            Config::default(),
-    ).expect("Nie można utworzyć obserwatora");
-        watcher.watch(dir, RecursiveMode::NonRecursive).expect("Nie można obserwować katalogu");
+    // Create and run tray application
+    let mut app = TrayApp::new();
 
-    while running.load(Ordering::SeqCst) {
-        match rx.recv() {
-            Ok(Ok(event)) => {
-                for path in event.paths {
-                    if event.kind.is_create() || event.kind.is_modify() {
-                        check_path(&path);
-                    }
-                }
-            }
-            Ok(Err(e)) => eprintln!("Błąd notify: {}", e),
-            Err(e) => eprintln!("Błąd odbioru: {}", e),
-        }
-    }
+    event_loop.run_app(&mut app).expect("Błąd event loop");
 }
