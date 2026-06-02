@@ -24,8 +24,11 @@ pub fn determine_new_filename(text: &str) -> Result<Option<String>, Box<dyn std:
         return Ok(Some(format!("{}-{}{}.pdf", form_type_clean, month, year)));
     }
 
-    // Wzór dla potwierdzenia przelewu ZUS
-    let zus_re = Regex::new(r"DANE ODBIORCY\s*Zakład Ubezpieczeń Społecznych.*DATA OPERACJI\s*(\d{2})-(\d{2})-(\d{4})")?;
+    // Wzór dla potwierdzenia przelewu ZUS.
+    // Flaga (?s) sprawia, że `.` obejmuje znaki nowej linii — pola w tekście
+    // wyekstrahowanym z PDF są zwykle na osobnych liniach. `.*?` jest leniwe,
+    // by dopasować najbliższą datę operacji.
+    let zus_re = Regex::new(r"(?s)DANE ODBIORCY\s*Zakład Ubezpieczeń Społecznych.*?DATA OPERACJI\s*(\d{2})-(\d{2})-(\d{4})")?;
     if let Some(captures) = zus_re.captures(text) {
         // grupa 1 = dzień (nieużywany), grupa 2 = miesiąc, grupa 3 = rok
         let month: i16 = captures[2].parse().unwrap_or(0); // np. 09
@@ -111,6 +114,17 @@ mod tests {
         // Regresja: wcześniej `year` czytał grupę miesiąca zamiast roku,
         // przez co w nazwie pliku rok był zastępowany numerem miesiąca.
         let text = "DANE ODBIORCY Zakład Ubezpieczeń Społecznych foo DATA OPERACJI 15-09-2025";
+        assert_eq!(
+            determine_new_filename(text).unwrap(),
+            Some("ZUS-082025.pdf".to_string())
+        );
+    }
+
+    #[test]
+    fn zus_matches_when_fields_span_multiple_lines() {
+        // Realistyczny tekst z PDF: pola są na osobnych liniach. Bez flagi (?s)
+        // `.` nie obejmuje znaku nowej linii, więc wzór ZUS nigdy by nie pasował.
+        let text = "DANE ODBIORCY\nZakład Ubezpieczeń Społecznych\nul. Szamocka 3, 5\n01-748 Warszawa\nTYTUŁ\nskładka\nDATA OPERACJI 15-09-2025";
         assert_eq!(
             determine_new_filename(text).unwrap(),
             Some("ZUS-082025.pdf".to_string())
