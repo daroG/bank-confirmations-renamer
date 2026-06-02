@@ -1,4 +1,4 @@
-use log::info;
+use log::{info, error};
 use std::path::PathBuf;
 
 pub fn init_logger() -> PathBuf {
@@ -34,6 +34,29 @@ pub fn init_logger() -> PathBuf {
             )
         })
         .init();
+
+    // Route panics to the log file instead of the raw console.
+    // Panics from pdf-extract (e.g. "missing unicode map and encoding") are
+    // caught by panic::catch_unwind in pdf_processor, but the default panic
+    // hook still prints an alarming "thread 'main' panicked" message to stderr
+    // before the unwind is caught. This hook records the panic in the log so
+    // handled panics are documented rather than looking like a crash.
+    std::panic::set_hook(Box::new(|panic_info| {
+        let location = panic_info
+            .location()
+            .map(|l| format!("{}:{}", l.file(), l.line()))
+            .unwrap_or_else(|| "unknown".to_string());
+
+        let message = if let Some(s) = panic_info.payload().downcast_ref::<&str>() {
+            (*s).to_string()
+        } else if let Some(s) = panic_info.payload().downcast_ref::<String>() {
+            s.clone()
+        } else {
+            "nieznany powód paniki".to_string()
+        };
+
+        error!("Przechwycono panikę w {}: {}", location, message);
+    }));
 
     info!("=== Aplikacja Invoice Renamer uruchomiona ===");
     info!("Plik logu: {}", log_file_path.display());
