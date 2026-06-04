@@ -170,10 +170,16 @@ This separation ensures:
      - **ZUS payments**: `(?s)DANE ODBIORCY ... Zakład Ubezpieczeń Społecznych ... DATA OPERACJI (?P<day>..)-(?P<month>..)-(?P<year>....)`
        → template `ZUS-{prevmonthyear(month, year)}.pdf` (previous month, e.g., "ZUS-082025.pdf").
        Note the `(?s)` flag so `.` matches newlines (extracted PDF text spans multiple lines).
-   - **Template engine**: `{group}` substitutes a named capture; `{func(args)}` calls a helper.
-     Helpers: `nodash`, `upper`, `lower`, `prevmonthyear`. New transforms are added in `apply_helper()`.
-   - **Robustness**: rules with an invalid regex/template are logged and skipped (one typo
-     can't disable the app); a corrupt `rules.json` falls back to defaults; active rules are
+   - **Template engine** (recursive-descent parser in `rules.rs`): text outside `{...}` is
+     literal; inside, an expression is `{group}` (a named capture), a string literal `"..."`,
+     or a function call `{func(arg, ...)}` whose args are themselves expressions — so calls
+     **nest** (e.g. `{upper(nodash(form))}`). Literal braces are escaped by doubling
+     (`{{` → `{`, `}}` → `}`). Helpers: `nodash`, `upper`, `lower`, `pad(x, "n")`,
+     `prevmonthyear`. New transforms go in `apply_helper()` (also update `helper_arity()`).
+   - **Robustness**: at compile time each rule is validated — template syntax, that every
+     referenced capture exists in the regex, and that helper names/arity are valid; an invalid
+     rule is logged and skipped (one typo can't disable the app, and misuse fails loudly rather
+     than silently at render). A corrupt `rules.json` falls back to defaults; active rules are
      compiled once via `OnceLock`. (Caveat: editing `rules.json` requires an app restart —
      "Przeładuj" does not yet re-read it.)
 

@@ -8,19 +8,30 @@
 //!
 //! ## Szablony
 //!
-//! W szablonie `{nazwa}` jest podstawiane przez nazwaną grupę przechwytującą
-//! z wyrażenia regularnego (`(?P<nazwa>...)`). Można też wywołać funkcję
-//! pomocniczą: `{funkcja(arg1, arg2)}`, gdzie argumentami są nazwy grup.
+//! Tekst poza `{...}` jest dosłowny. Wewnątrz `{...}` znajduje się wyrażenie:
+//! - `{nazwa}` — wartość nazwanej grupy przechwytującej (`(?P<nazwa>...)`),
+//! - `{funkcja(arg1, arg2)}` — wywołanie funkcji pomocniczej, gdzie każdy
+//!   argument jest **wyrażeniem**: grupą, literałem tekstowym `"..."`, albo
+//!   **zagnieżdżonym** wywołaniem funkcji (np. `{upper(nodash(form))}`).
+//!
+//! Nawiasy klamrowe w dosłownym tekście zapisuje się przez podwojenie:
+//! `{{` → `{`, `}}` → `}`. W literałach tekstowych działa `\"` i `\\`.
 //!
 //! Dostępne funkcje pomocnicze:
-//! - `nodash(x)`          — usuwa myślniki (np. `PIT-5` → `PIT5`)
+//! - `nodash(x)`            — usuwa myślniki (np. `PIT-5` → `PIT5`)
 //! - `upper(x)` / `lower(x)` — zmiana wielkości liter
-//! - `prevmonthyear(m, y)` — z miesiąca i roku tworzy `MMYYYY` poprzedniego
+//! - `pad(x, "n")`          — dopełnia `x` zerami z lewej do szerokości `n`
+//! - `prevmonthyear(m, y)`  — z miesiąca i roku tworzy `MMYYYY` poprzedniego
 //!   miesiąca (z przeniesieniem roku w styczniu); używane dla ZUS.
+//!
+//! Przy kompilacji reguły sprawdzane są: poprawność składni szablonu, istnienie
+//! użytych grup w wyrażeniu regularnym oraz nazwa i liczba argumentów funkcji.
+//! Reguła z błędem jest pomijana (z wpisem w logu), a nie cicho ignorowana.
 
 use serde::{Deserialize, Serialize};
 use regex::{Regex, Captures};
 use log::{info, warn, error};
+use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::OnceLock;
@@ -117,9 +128,20 @@ pub struct CompiledRule {
 
 /// Fragment sparsowanego szablonu nazwy pliku.
 enum TemplatePart {
+    /// Dosłowny tekst (po odkodowaniu `{{`/`}}`).
     Literal(String),
+    /// Wyrażenie z wnętrza `{...}`.
+    Expr(Expr),
+}
+
+/// Wyrażenie w szablonie.
+enum Expr {
+    /// Nazwana grupa przechwytująca z regex.
     Capture(String),
-    Func(String, Vec<String>),
+    /// Literał tekstowy `"..."`.
+    StrLit(String),
+    /// Wywołanie funkcji pomocniczej z argumentami (mogą być zagnieżdżone).
+    Call(String, Vec<Expr>),
 }
 
 /// Kompiluje zestaw reguł. Reguły z błędnym wzorem lub szablonem są
@@ -142,6 +164,13 @@ pub fn compile(config: &RulesConfig) -> Vec<CompiledRule> {
                 continue;
             }
         };
+        // Walidacja: czy szablon odwołuje się tylko do istniejących grup i
+        // znanych funkcji o właściwej liczbie argumentów.
+        let capture_names: HashSet<&str> = regex.capture_names().flatten().collect();
+        if let Err(e) = validate_template(&template, &capture_names) {
+            error!("Pomijam regułę '{}': {}", rule.name, e);
+            continue;
+        }
         compiled.push(CompiledRule { name: rule.name.clone(), regex, template });
     }
     compiled
@@ -177,89 +206,262 @@ pub fn determine_new_filename(text: &str) -> Option<String> {
     apply_rules(text, active_rules())
 }
 
-// --- Silnik szablonów ---------------------------------------------------
+// --- Silnik szablonów: parser rekurencyjny ------------------------------
 
-// `while let` (nie `for`) jest tu konieczne: zagnieżdżone pętle konsumują
-// ten sam iterator, więc nie można go przenieść do pętli `for`.
-#[allow(clippy::while_let_on_iterator)]
-fn parse_template(template: &str) -> Result<Vec<TemplatePart>, String> {
-    let mut parts = Vec::new();
-    let mut literal = String::new();
-    let mut chars = template.chars();
+struct Parser {
+    chars: Vec<char>,
+    pos: usize,
+}
 
-    while let Some(c) = chars.next() {
-        match c {
-            '{' => {
-                if !literal.is_empty() {
-                    parts.push(TemplatePart::Literal(std::mem::take(&mut literal)));
-                }
-                let mut expr = String::new();
-                let mut closed = false;
-                while let Some(nc) = chars.next() {
-                    if nc == '}' {
-                        closed = true;
-                        break;
-                    }
-                    expr.push(nc);
-                }
-                if !closed {
-                    return Err(format!("niezamknięty '{{' w szablonie: {}", template));
-                }
-                parts.push(parse_expr(expr.trim())?);
-            }
-            '}' => return Err(format!("nieoczekiwany '}}' w szablonie: {}", template)),
-            _ => literal.push(c),
+impl Parser {
+    fn new(s: &str) -> Self {
+        Parser { chars: s.chars().collect(), pos: 0 }
+    }
+
+    fn peek(&self) -> Option<char> {
+        self.chars.get(self.pos).copied()
+    }
+
+    fn bump(&mut self) -> Option<char> {
+        let c = self.peek();
+        if c.is_some() {
+            self.pos += 1;
+        }
+        c
+    }
+
+    fn skip_ws(&mut self) {
+        while matches!(self.peek(), Some(c) if c.is_whitespace()) {
+            self.pos += 1;
         }
     }
 
-    if !literal.is_empty() {
-        parts.push(TemplatePart::Literal(literal));
+    /// template := ( "{{" | "}}" | literał | "{" expr "}" )*
+    fn parse_template(&mut self) -> Result<Vec<TemplatePart>, String> {
+        let mut parts = Vec::new();
+        let mut literal = String::new();
+        loop {
+            match self.peek() {
+                None => break,
+                Some('{') => {
+                    self.bump();
+                    if self.peek() == Some('{') {
+                        self.bump();
+                        literal.push('{');
+                        continue;
+                    }
+                    if !literal.is_empty() {
+                        parts.push(TemplatePart::Literal(std::mem::take(&mut literal)));
+                    }
+                    let expr = self.parse_expr()?;
+                    self.skip_ws();
+                    match self.bump() {
+                        Some('}') => {}
+                        _ => return Err("oczekiwano '}' zamykającego wyrażenie".to_string()),
+                    }
+                    parts.push(TemplatePart::Expr(expr));
+                }
+                Some('}') => {
+                    self.bump();
+                    if self.peek() == Some('}') {
+                        self.bump();
+                        literal.push('}');
+                    } else {
+                        return Err("nieoczekiwany '}' (dla dosłownego znaku użyj '}}')".to_string());
+                    }
+                }
+                Some(c) => {
+                    self.bump();
+                    literal.push(c);
+                }
+            }
+        }
+        if !literal.is_empty() {
+            parts.push(TemplatePart::Literal(literal));
+        }
+        Ok(parts)
+    }
+
+    /// expr := literał_tekstowy | ident [ "(" args ")" ]
+    fn parse_expr(&mut self) -> Result<Expr, String> {
+        self.skip_ws();
+        match self.peek() {
+            Some('"') => self.parse_string_literal(),
+            Some(c) if is_ident_start(c) => {
+                let ident = self.parse_ident();
+                self.skip_ws();
+                if self.peek() == Some('(') {
+                    self.bump();
+                    let args = self.parse_args()?;
+                    self.skip_ws();
+                    match self.bump() {
+                        Some(')') => {}
+                        _ => return Err(format!("oczekiwano ')' po argumentach '{}'", ident)),
+                    }
+                    Ok(Expr::Call(ident, args))
+                } else {
+                    Ok(Expr::Capture(ident))
+                }
+            }
+            Some(c) => Err(format!("nieoczekiwany znak '{}' w wyrażeniu", c)),
+            None => Err("nieoczekiwany koniec szablonu w wyrażeniu".to_string()),
+        }
+    }
+
+    /// args := [ expr ( "," expr )* ]
+    fn parse_args(&mut self) -> Result<Vec<Expr>, String> {
+        let mut args = Vec::new();
+        self.skip_ws();
+        if self.peek() == Some(')') {
+            return Ok(args);
+        }
+        loop {
+            args.push(self.parse_expr()?);
+            self.skip_ws();
+            match self.peek() {
+                Some(',') => {
+                    self.bump();
+                }
+                Some(')') => break,
+                _ => return Err("oczekiwano ',' lub ')' w argumentach".to_string()),
+            }
+        }
+        Ok(args)
+    }
+
+    fn parse_ident(&mut self) -> String {
+        let mut s = String::new();
+        while matches!(self.peek(), Some(c) if is_ident_char(c)) {
+            s.push(self.bump().unwrap());
+        }
+        s
+    }
+
+    fn parse_string_literal(&mut self) -> Result<Expr, String> {
+        self.bump(); // otwierający "
+        let mut s = String::new();
+        loop {
+            match self.bump() {
+                None => return Err("niezamknięty literał tekstowy".to_string()),
+                Some('"') => return Ok(Expr::StrLit(s)),
+                Some('\\') => match self.bump() {
+                    Some('"') => s.push('"'),
+                    Some('\\') => s.push('\\'),
+                    Some(other) => {
+                        s.push('\\');
+                        s.push(other);
+                    }
+                    None => return Err("niezamknięty literał tekstowy".to_string()),
+                },
+                Some(c) => s.push(c),
+            }
+        }
+    }
+}
+
+fn is_ident_start(c: char) -> bool {
+    c.is_alphabetic() || c == '_'
+}
+
+fn is_ident_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
+}
+
+fn parse_template(template: &str) -> Result<Vec<TemplatePart>, String> {
+    let mut parser = Parser::new(template);
+    let parts = parser.parse_template()?;
+    if parser.pos != parser.chars.len() {
+        return Err("niesparsowana reszta szablonu".to_string());
     }
     Ok(parts)
 }
 
-fn parse_expr(expr: &str) -> Result<TemplatePart, String> {
-    if let Some(open) = expr.find('(') {
-        if !expr.ends_with(')') {
-            return Err(format!("niepoprawne wywołanie funkcji: {}", expr));
+// --- Walidacja przy kompilacji ------------------------------------------
+
+fn validate_template(parts: &[TemplatePart], captures: &HashSet<&str>) -> Result<(), String> {
+    for part in parts {
+        if let TemplatePart::Expr(e) = part {
+            validate_expr(e, captures)?;
         }
-        let name = expr[..open].trim().to_string();
-        let args = expr[open + 1..expr.len() - 1]
-            .split(',')
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect();
-        Ok(TemplatePart::Func(name, args))
-    } else if expr.is_empty() {
-        Err("pusty wyrażenie {} w szablonie".to_string())
-    } else {
-        Ok(TemplatePart::Capture(expr.to_string()))
+    }
+    Ok(())
+}
+
+fn validate_expr(expr: &Expr, captures: &HashSet<&str>) -> Result<(), String> {
+    match expr {
+        Expr::StrLit(_) => Ok(()),
+        Expr::Capture(name) => {
+            if captures.contains(name.as_str()) {
+                Ok(())
+            } else {
+                Err(format!("szablon używa nieznanej grupy '{}'", name))
+            }
+        }
+        Expr::Call(name, args) => {
+            match helper_arity(name) {
+                Some(arity) if arity == args.len() => {}
+                Some(arity) => {
+                    return Err(format!(
+                        "funkcja '{}' oczekuje {} argument(ów), podano {}",
+                        name,
+                        arity,
+                        args.len()
+                    ))
+                }
+                None => return Err(format!("nieznana funkcja '{}'", name)),
+            }
+            for a in args {
+                validate_expr(a, captures)?;
+            }
+            Ok(())
+        }
     }
 }
+
+/// Liczba argumentów znanych funkcji (źródło prawdy dla walidacji).
+fn helper_arity(name: &str) -> Option<usize> {
+    match name {
+        "nodash" | "upper" | "lower" => Some(1),
+        "pad" | "prevmonthyear" => Some(2),
+        _ => None,
+    }
+}
+
+// --- Ewaluacja ----------------------------------------------------------
 
 fn render(parts: &[TemplatePart], caps: &Captures) -> Option<String> {
     let mut out = String::new();
     for part in parts {
         match part {
             TemplatePart::Literal(s) => out.push_str(s),
-            TemplatePart::Capture(name) => out.push_str(caps.name(name)?.as_str()),
-            TemplatePart::Func(name, args) => {
-                let vals: Option<Vec<&str>> =
-                    args.iter().map(|a| caps.name(a).map(|m| m.as_str())).collect();
-                let result = apply_helper(name, &vals?)?;
-                out.push_str(&result);
-            }
+            TemplatePart::Expr(e) => out.push_str(&eval_expr(e, caps)?),
         }
     }
     Some(out)
 }
 
-/// Rejestr funkcji pomocniczych szablonu. Tu dodaje się nowe transformacje.
-fn apply_helper(name: &str, args: &[&str]) -> Option<String> {
+fn eval_expr(expr: &Expr, caps: &Captures) -> Option<String> {
+    match expr {
+        Expr::StrLit(s) => Some(s.clone()),
+        Expr::Capture(name) => caps.name(name).map(|m| m.as_str().to_string()),
+        Expr::Call(name, args) => {
+            let vals: Option<Vec<String>> = args.iter().map(|a| eval_expr(a, caps)).collect();
+            apply_helper(name, &vals?)
+        }
+    }
+}
+
+/// Rejestr funkcji pomocniczych szablonu. Dodając nową, zaktualizuj też
+/// `helper_arity` (używane przy walidacji).
+fn apply_helper(name: &str, args: &[String]) -> Option<String> {
     match (name, args) {
         ("nodash", [x]) => Some(x.replace('-', "")),
         ("upper", [x]) => Some(x.to_uppercase()),
         ("lower", [x]) => Some(x.to_lowercase()),
+        ("pad", [x, width]) => {
+            let w: usize = width.parse().ok()?;
+            Some(format!("{:0>width$}", x, width = w))
+        }
         ("prevmonthyear", [m, y]) => {
             let month: i32 = m.parse().ok()?;
             let year: i32 = y.parse().ok()?;
@@ -392,5 +594,67 @@ mod tests {
         };
         let compiled = compile(&config);
         assert_eq!(apply_rules("abc", &compiled), Some("ABC-abc.pdf".to_string()));
+    }
+
+    fn one_rule(pattern: &str, template: &str) -> Vec<CompiledRule> {
+        compile(&RulesConfig {
+            rules: vec![Rule {
+                name: "test".to_string(),
+                pattern: pattern.to_string(),
+                template: template.to_string(),
+            }],
+        })
+    }
+
+    #[test]
+    fn nested_function_calls() {
+        // {upper(nodash(form))}: pit-5 -> nodash -> pit5 -> upper -> PIT5
+        let compiled = one_rule(r"(?P<form>pit-5)", "{upper(nodash(form))}.pdf");
+        assert_eq!(apply_rules("pit-5", &compiled), Some("PIT5.pdf".to_string()));
+    }
+
+    #[test]
+    fn string_literal_argument() {
+        // pad(month, "4"): "9" -> "0009"
+        let compiled = one_rule(r"(?P<month>9)", r#"X{pad(month, "4")}.pdf"#);
+        assert_eq!(apply_rules("9", &compiled), Some("X0009.pdf".to_string()));
+    }
+
+    #[test]
+    fn brace_escaping() {
+        let compiled = one_rule(r"(?P<n>FOO)", "{{kopia}}-{n}.pdf");
+        assert_eq!(apply_rules("FOO", &compiled), Some("{kopia}-FOO.pdf".to_string()));
+    }
+
+    #[test]
+    fn literal_parentheses_pass_through() {
+        // Nawiasy poza {...} są dosłowne.
+        let compiled = one_rule(r"(?P<n>FOO)", "{n} (kopia).pdf");
+        assert_eq!(apply_rules("FOO", &compiled), Some("FOO (kopia).pdf".to_string()));
+    }
+
+    #[test]
+    fn unknown_capture_rejected_at_compile() {
+        // Wcześniej cicho zawodziło przy renderowaniu; teraz reguła jest odrzucana.
+        let compiled = one_rule(r"(?P<n>FOO)", "{nieznana}.pdf");
+        assert_eq!(compiled.len(), 0);
+    }
+
+    #[test]
+    fn unknown_helper_rejected_at_compile() {
+        let compiled = one_rule(r"(?P<n>FOO)", "{frobnicate(n)}.pdf");
+        assert_eq!(compiled.len(), 0);
+    }
+
+    #[test]
+    fn wrong_arity_rejected_at_compile() {
+        let compiled = one_rule(r"(?P<n>FOO)", "{nodash(n, n)}.pdf");
+        assert_eq!(compiled.len(), 0);
+    }
+
+    #[test]
+    fn unbalanced_braces_rejected_at_compile() {
+        let compiled = one_rule(r"(?P<n>FOO)", "{n.pdf");
+        assert_eq!(compiled.len(), 0);
     }
 }
