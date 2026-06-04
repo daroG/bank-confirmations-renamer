@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a Rust-based PDF file monitoring and renaming tool that watches directories for PDF files starting with "transfer_" and automatically renames them based on their content. It extracts text from PDFs and uses regex patterns to identify tax forms (PIT-5, VAT-7) and ZUS (Polish social insurance) payment confirmations, then renames files to a standardized format.
+This is a Rust-based PDF file monitoring and renaming tool that watches directories for PDF files starting with "transfer_" and automatically renames them based on their content. It extracts text from PDFs and matches it against a set of data-driven rules (regex + filename template, see `rules.rs`) to identify documents such as tax forms (PIT-5, VAT-7) and ZUS (Polish social insurance) payment confirmations, then renames files to a standardized format. Rules live in `rules.json` and can be edited without recompiling.
 
 The application comes in two versions:
 - **GUI Tray Application** (default) - Runs in the Windows system tray with a menu for managing watched directories
@@ -78,7 +78,8 @@ The codebase is organized into focused modules with clear responsibilities:
 **Core Logic:**
 - `tray_app.rs` - Tray icon and menu handling
 - `file_watcher.rs` - Directory monitoring and file detection
-- `pdf_processor.rs` - PDF parsing and renaming
+- `pdf_processor.rs` - PDF text extraction and file renaming (delegates naming to `rules.rs`)
+- `rules.rs` - Data-driven rename rules engine (regex + filename templates, loaded from `rules.json`)
 
 **Supporting Modules:**
 - `config.rs` - Configuration persistence
@@ -150,16 +151,39 @@ This separation ensures:
    - Creates a simple document/PDF icon representation
    - Used for the system tray icon
 
-9. **pdf_processor.rs** - PDF text extraction and renaming logic
-   - Extracts text from PDF files using `pdf-extract` crate
-   - Uses regex patterns to identify document types:
-     - **Tax forms**: Pattern `OKR/ YYMmm/SFP/(PIT-5|VAT-7)` extracts year, month, and form type
-       - Renames to: `{FORM}{MM}{YY}.pdf` (e.g., "PIT5-0925.pdf")
-     - **ZUS payments**: Pattern matching "DANE ODBIORCY Zakład Ubezpieczeń Społecznych" with date extraction
-       - Renames to: `ZUS-{MM}{YYYY}.pdf` using previous month from payment date
+9. **pdf_processor.rs** - PDF text extraction and renaming orchestration
+   - Extracts text from PDF files using `pdf-extract` crate (with panic recovery)
+   - Delegates the new filename decision to `rules::determine_new_filename()`
+   - Renames the file, with a **no-overwrite guard**: if the target name already
+     exists, the file is skipped (a log entry is written) rather than letting
+     `fs::rename` silently clobber the existing file
    - Returns `Result<(), Box<dyn std::error::Error>>` for error handling
 
-10. **directory_checker.rs** - Batch directory processing utility
+10. **rules.rs** - Data-driven rename rules engine
+   - Rename rules live in `%APPDATA%\invoices-renamer\rules.json`, not in code.
+     Adding a new document type is a JSON edit — no recompile.
+   - `Rule { name, pattern, template }` and `RulesConfig` are (de)serialized via serde.
+     Defaults are written on first run and reproduce the original PIT-5/VAT-7 and ZUS behavior.
+   - Default rules:
+     - **Tax forms**: `OKR/\s*(?P<year>\d{2})M(?P<month>\d{2})/SFP/(?P<form>PIT-5|VAT-7)`
+       → template `{nodash(form)}-{month}{year}.pdf` (e.g., "PIT5-0925.pdf")
+     - **ZUS payments**: `(?s)DANE ODBIORCY ... Zakład Ubezpieczeń Społecznych ... DATA OPERACJI (?P<day>..)-(?P<month>..)-(?P<year>....)`
+       → template `ZUS-{prevmonthyear(month, year)}.pdf` (previous month, e.g., "ZUS-082025.pdf").
+       Note the `(?s)` flag so `.` matches newlines (extracted PDF text spans multiple lines).
+   - **Template engine** (recursive-descent parser in `rules.rs`): text outside `{...}` is
+     literal; inside, an expression is `{group}` (a named capture), a string literal `"..."`,
+     or a function call `{func(arg, ...)}` whose args are themselves expressions — so calls
+     **nest** (e.g. `{upper(nodash(form))}`). Literal braces are escaped by doubling
+     (`{{` → `{`, `}}` → `}`). Helpers: `nodash`, `upper`, `lower`, `pad(x, "n")`,
+     `prevmonthyear`. New transforms go in `apply_helper()` (also update `helper_arity()`).
+   - **Robustness**: at compile time each rule is validated — template syntax, that every
+     referenced capture exists in the regex, and that helper names/arity are valid; an invalid
+     rule is logged and skipped (one typo can't disable the app, and misuse fails loudly rather
+     than silently at render). A corrupt `rules.json` falls back to defaults; active rules are
+     compiled once via `OnceLock`. (Caveat: editing `rules.json` requires an app restart —
+     "Przeładuj" does not yet re-read it.)
+
+11. **directory_checker.rs** - Batch directory processing utility
    - Processes all PDF files in a directory at once
    - Useful for batch operations on existing files
    - Not actively used in current application flow
@@ -243,7 +267,8 @@ Get-Content $env:APPDATA\invoices-renamer\app.log -Wait -Tail 50
 - The code contains Polish language comments and console output
 - Files must start with "transfer_" prefix to be processed
 - Each directory is monitored non-recursively (subdirectories are not watched)
-- Configuration file location: `%APPDATA%\invoices-renamer\config.json` on Windows
+- Configuration file location: `%APPDATA%\invoices-renamer\config.json` on Windows (watched directories)
+- Rename rules file location: `%APPDATA%\invoices-renamer\rules.json` on Windows (regex + templates; auto-created with defaults; restart required after editing)
 - Log file location: `%APPDATA%\invoices-renamer\app.log` on Windows
 - The GUI version runs without a console window in release mode (uses `windows_subsystem = "windows"`)
 - The application uses separate threads for each directory watcher
